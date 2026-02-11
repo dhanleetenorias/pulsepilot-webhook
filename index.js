@@ -28,16 +28,23 @@ app.get("/webhook", (req, res) => {
 // HANDLE INCOMING MESSAGES
 // ==========================
 app.post("/webhook", async (req, res) => {
+  console.log("WEBHOOK HIT");
+
   try {
     const body = req.body;
+    console.log("Incoming body:", JSON.stringify(body, null, 2));
 
     if (body.object === "page") {
       for (const entry of body.entry) {
         for (const event of entry.messaging) {
 
-          if (event.message) {
+          // ONLY handle actual message events
+          if (event.message && event.message.text) {
+
+            console.log("Processing inbound message");
+
             const senderId = event.sender.id;
-            const messageText = event.message.text || null;
+            const messageText = event.message.text;
 
             // 1️⃣ UPSERT CONVERSATION
             const conversation = await upsertConversation({
@@ -46,6 +53,8 @@ app.post("/webhook", async (req, res) => {
               userPsid: senderId,
               isHot: true
             });
+
+            console.log("Conversation upserted:", conversation.id);
 
             // 2️⃣ STORE INBOUND MESSAGE
             await insertMessage({
@@ -60,7 +69,9 @@ app.post("/webhook", async (req, res) => {
               rawPayload: event
             });
 
-            // 3️⃣ SEND AUTO RESPONSE (existing behavior)
+            console.log("Inbound stored");
+
+            // 3️⃣ SEND AUTO RESPONSE
             const replyText = "Thanks for your message. We'll get back to you shortly.";
 
             await axios.post(
@@ -70,6 +81,8 @@ app.post("/webhook", async (req, res) => {
                 message: { text: replyText }
               }
             );
+
+            console.log("Reply sent");
 
             // 4️⃣ STORE OUTBOUND MESSAGE
             await insertMessage({
@@ -81,12 +94,15 @@ app.post("/webhook", async (req, res) => {
               metaTimestamp: null,
               rawPayload: { auto: true }
             });
+
+            console.log("Outbound stored");
           }
         }
       }
     }
 
     res.sendStatus(200);
+
   } catch (error) {
     console.error("Webhook error:", error);
     res.sendStatus(500);
