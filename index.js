@@ -1,5 +1,6 @@
 const express = require("express");
 const axios = require("axios");
+const { upsertConversation, insertMessage } = require("./lib/revenueCore");
 
 const app = express();
 app.use(express.json());
@@ -18,57 +19,83 @@ app.get("/webhook", (req, res) => {
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
     console.log("Webhook verified");
     return res.status(200).send(challenge);
+  } else {
+    return res.sendStatus(403);
   }
-
-  res.sendStatus(403);
 });
 
 // ==========================
-// RECEIVE MESSAGE
+// HANDLE INCOMING MESSAGES
 // ==========================
 app.post("/webhook", async (req, res) => {
-  console.log("Incoming webhook:", JSON.stringify(req.body, null, 2));
-
-  const entry = req.body.entry?.[0];
-  const messaging = entry?.messaging?.[0];
-
-  if (messaging?.sender?.id && messaging?.message?.text) {
-    const senderId = messaging.sender.id;
-    const userMessage = messaging.message.text;
-
-    console.log("User said:", userMessage);
-
-    await sendMessage(senderId, `You said: ${userMessage}`);
-  }
-
-  res.sendStatus(200);
-});
-
-// ==========================
-// SEND MESSAGE
-// ==========================
-async function sendMessage(recipientId, messageText) {
   try {
-    await axios.post(
-      "https://graph.facebook.com/v21.0/me/messages",
-      {
-        recipient: { id: recipientId },
-        message: { text: messageText }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${PAGE_ACCESS_TOKEN}`,
-          "Content-Type": "application/json"
+    const body = req.body;
+
+    if (body.object === "page") {
+      for (const entry of body.entry) {
+        for (const event of entry.messaging) {
+
+          if (event.message) {
+            const senderId = event.sender.id;
+            const messageText = event.message.text || null;
+
+            // 1️⃣ UPSERT CONVERSATION
+            const conversation = await upsertConversation({
+              platform: "messenger",
+              threadId: senderId,
+              userPsid: senderId,
+              isHot: true
+            });
+
+            // 2️⃣ STORE INBOUND MESSAGE
+            await insertMessage({
+              conversationId: conversation.id,
+              platform: "messenger",
+              direction: "INBOUND",
+              text: messageText,
+              metaMessageId: event.message.mid || null,
+              metaTimestamp: event.timestamp
+                ? new Date(event.timestamp).toISOString()
+                : null,
+              rawPayload: event
+            });
+
+            // 3️⃣ SEND AUTO RESPONSE (existing behavior)
+            const replyText = "Thanks for your message. We'll get back to you shortly.";
+
+            await axios.post(
+              `https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+              {
+                recipient: { id: senderId },
+                message: { text: replyText }
+              }
+            );
+
+            // 4️⃣ STORE OUTBOUND MESSAGE
+            await insertMessage({
+              conversationId: conversation.id,
+              platform: "messenger",
+              direction: "OUTBOUND",
+              text: replyText,
+              metaMessageId: null,
+              metaTimestamp: null,
+              rawPayload: { auto: true }
+            });
+          }
         }
       }
-    );
+    }
 
-    console.log("Message sent!");
+    res.sendStatus(200);
   } catch (error) {
-    console.error("Error sending message:", error.response?.data || error.message);
+    console.error("Webhook error:", error);
+    res.sendStatus(500);
   }
-}
-
-app.listen(process.env.PORT || 3000, () => {
-  console.log("Webhook running");
 });
+
+// ==========================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
